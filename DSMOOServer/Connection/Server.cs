@@ -105,6 +105,9 @@ public class Server(
     private async Task HandleSocket(Socket socket)
     {
         var client = new Client(socket, Logger.Copy(), packetManager, objectController, EventManager);
+		// fixes prevent stuck sockets causing server freezes
+        socket.ReceiveTimeout = 5000;
+        socket.SendTimeout = 5000;
         IMemoryOwner<byte> memory = null!;
         var endPointString = socket.RemoteEndPoint?.ToString() ?? "";
 
@@ -205,9 +208,14 @@ public class Server(
             client.Logger.Error("Error while deserializing a packet", ex);
         }
     }
-
     private async Task<bool> Read(Socket socket, Memory<byte> readMem, int readSize, int readOffset)
     {
+		// fixes prevent packet spam / invalid size causing freezes
+       if (readSize > 1_000_000)
+       { 
+			Logger.Warn($"Dropping oversized read: {readSize} from {socket.RemoteEndPoint}");
+			return false;
+        }
         try
         {
             readSize += readOffset;
@@ -244,28 +252,41 @@ public class Server(
         return (true, header);
     }
 
-    private async Task<(bool, IMemoryOwner<byte>)> ReadPacketToMemory(Socket socket, IMemoryOwner<byte> memory,
-        PacketHeader header)
+private async Task<(bool, IMemoryOwner<byte>)> ReadPacketToMemory(Socket socket, IMemoryOwner<byte> memory,
+    PacketHeader header)
+{
+    // fixes: prevent invalid / packet sizes (causes freezes + crashes)
+    if (header.PacketSize <= 0 || header.PacketSize > 1_000_000)
     {
-        if (header.PacketSize == 0)
-            return (true, memory);
-
-        var temporaryMemory = memory;
-        memory = _memoryPool.Rent(Constants.HeaderSize + header.PacketSize);
-        temporaryMemory.Memory.Span[..Constants.HeaderSize].CopyTo(memory.Memory.Span[..Constants.HeaderSize]);
-        temporaryMemory.Dispose();
-
-        if (!await Read(socket, memory.Memory, header.PacketSize, Constants.HeaderSize))
-            return (false, memory);
-
-        return (true, memory);
+        Logger.Warn($"Rejected packet size {header.PacketSize} from {socket.RemoteEndPoint}");
+        return (false, memory);
     }
 
-    public async Task ReplaceBroadcast(IPacket packet, Guid? sender, Dictionary<Guid, IPacket> replacePackets)
+    var temporaryMemory = memory;
+
+    memory = _memoryPool.Rent(Constants.HeaderSize + header.PacketSize);
+
+    temporaryMemory.Memory.Span[..Constants.HeaderSize]
+        .CopyTo(memory.Memory.Span[..Constants.HeaderSize]);
+
+    temporaryMemory.Dispose();
+
+    if (!await Read(socket, memory.Memory, header.PacketSize, Constants.HeaderSize))
+        return (false, memory);
+
+    return (true, memory);
+}
+
+public async Task ReplaceBroadcast(IPacket packet, Guid? sender, Dictionary<Guid, IPacket> replacePackets)
+{
+    await Parallel.ForEachAsync(Clients.Values, async (client, _) =>
     {
-        await Parallel.ForEachAsync(Clients.Values, async (client, _) =>
+        try
         {
             if (client.Ignored || !client.FirstPacketSend)
+                return;
+
+            if (client.Id == sender)
                 return;
 
             if (replacePackets.TryGetValue(client.Id, out var packetReplace))
@@ -274,11 +295,14 @@ public class Server(
                 return;
             }
 
-            if (client.Id == sender) return;
-
             await client.Send(packet, sender);
-        });
-    }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Broadcast failed for {client.Id}: {ex.Message}");
+        }
+    });
+}
 
     public async Task Broadcast(IPacket packet, Guid? sender)
     {
