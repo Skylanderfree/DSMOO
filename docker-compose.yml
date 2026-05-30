@@ -1,6 +1,6 @@
 services:
   dsmoo:
-    image: ghcr.io/grafdimenzio/dsmoo:latest
+    image: ghcr.io/grafdimenzio/dsmoo:dev
     container_name: dsmoo
     restart: unless-stopped
     stdin_open: true
@@ -16,3 +16,13 @@ services:
 
 volumes:
   dsmoo:
+
+environment:
+  - DOTNET_GCServer=1
+  - DOTNET_ThreadPool_MinThreads=50
+
+logging:
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
