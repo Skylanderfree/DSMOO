@@ -5,24 +5,25 @@ services:
     restart: unless-stopped
     stdin_open: true
     tty: true
+
     environment:
       - PUID=1000
       - PGID=1000
       - TZ=Europe/Berlin
+      - DOTNET_GCServer=1
+      - DOTNET_ThreadPool_MinThreads=50
+
     ports:
       - "1027:1027"
+
     volumes:
       - dsmoo:/dsmoo
 
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   dsmoo:
-
-environment:
-  - DOTNET_GCServer=1
-  - DOTNET_ThreadPool_MinThreads=50
-
-logging:
-  driver: json-file
-  options:
-    max-size: "10m"
-    max-file: "3"
