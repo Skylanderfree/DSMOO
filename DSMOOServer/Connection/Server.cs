@@ -277,22 +277,22 @@ private async Task<(bool, IMemoryOwner<byte>)> ReadPacketToMemory(Socket socket,
     return (true, memory);
 }
 
-public async Task ReplaceBroadcast(IPacket packet, Guid? sender, Dictionary<Guid, IPacket> replacePackets)
-{
-    await Parallel.ForEachAsync(Clients.Values, async (client, _) =>
+    public async Task ReplaceBroadcast(IPacket packet, Guid? sender, Dictionary<Guid, IPacket> replacePackets)
+	{
+    foreach (var client in Clients.Values)
     {
         try
         {
             if (client.Ignored || !client.FirstPacketSend)
-                return;
+                continue;
 
             if (client.Id == sender)
-                return;
+                continue;
 
             if (replacePackets.TryGetValue(client.Id, out var packetReplace))
             {
                 await client.Send(packetReplace, sender);
-                return;
+                continue;
             }
 
             await client.Send(packet, sender);
@@ -301,32 +301,41 @@ public async Task ReplaceBroadcast(IPacket packet, Guid? sender, Dictionary<Guid
         {
             Logger.Warn($"Broadcast failed for {client.Id}: {ex.Message}");
         }
-    });
+    }
 }
 
-    public async Task Broadcast(IPacket packet, Guid? sender)
+public async Task Broadcast(IPacket packet, Guid? sender)
+{
+    var memory = MemoryPool<byte>.Shared.RentZero(Constants.HeaderSize + packet.Size);
+
+    var header = new PacketHeader
     {
-        var memory = MemoryPool<byte>.Shared.RentZero(Constants.HeaderSize + packet.Size);
-        var header = new PacketHeader
+        Id = sender ?? Guid.Empty,
+        Type = packetManager.GetPacketId(packet.GetType()),
+        PacketSize = packet.Size
+    };
+
+    PacketHelper.FillPacket(header, packet, memory.Memory);
+
+    await Broadcast(memory, sender);
+
+    memory.Dispose();
+}
+
+public async Task Broadcast(IMemoryOwner<byte> data, Guid? sender = null)
+{
+    foreach (var client in Clients.Values)
+    {
+        try
         {
-            Id = sender ?? Guid.Empty,
-            Type = packetManager.GetPacketId(packet.GetType()),
-            PacketSize = packet.Size
-        };
-        PacketHelper.FillPacket(header, packet, memory.Memory);
-        await Broadcast(memory, sender);
-        memory.Dispose();
-    }
+            if (client.Ignored || !client.FirstPacketSend || client.Id == sender)
+                continue;
 
-    public async Task Broadcast(IMemoryOwner<byte> data, Guid? sender = null)
-    {
-        await Parallel.ForEachAsync(Clients.Values,
-            async (client, _) =>
-            {
-                if (client.Ignored || !client.FirstPacketSend || client.Id == sender)
-                    return;
-
-                await client.Send(data.Memory);
-            });
+            await client.Send(data.Memory);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Broadcast failed for {client.Id}: {ex.Message}");
+        }
     }
 }
